@@ -1,0 +1,5 @@
+red.txt 
+label: "apples" 
+USA
+DK
+VZ
