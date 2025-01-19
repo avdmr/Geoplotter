@@ -1,0 +1,11 @@
+import geopandas as gpd
+
+# Laad de Shapefile
+shapefile_path = "ne_10m_admin_0_countries.shp"  # Pas dit aan naar jouw bestandspad
+gdf = gpd.read_file(shapefile_path)
+
+# Converteer naar GeoJSON en sla op
+geojson_path = "world_10m.geojson"  # Uitvoerbestand
+gdf.to_file(geojson_path, driver="GeoJSON")
+
+print(f"✅ Shapefile geconverteerd naar: {geojson_path}")
