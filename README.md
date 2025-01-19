@@ -1,7 +1,7 @@
 Python Scripts for Coloring Countries on a World Map Using a TXT List. Outputs an interactive map and PNG file
 
 Usage:
-- Download or fetch a new GeoJSON file using the fetch script from Natural Earth (https://www.naturalearthdata.com/downloads/), or use the provided GeoJSON files.
+- Download or fetch a new GeoJSON file using the fetch script, download and convert the admin countries map from Natural Earth and convert to geojosn (https://www.naturalearthdata.com/downloads/), or use the provided GeoJSON files.
 - Rewind the fetched files using the rewind script. (This addresses a known glitch in Plotly.)
 - Use the geoplotter script to generate the colored map.
 
