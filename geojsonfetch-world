@@ -1,0 +1,224 @@
+import os
+import json
+import requests
+from zipfile import ZipFile
+import pycountry
+
+# 🌍 URL van de wereld-GeoJSON repo
+REPO_URL = "https://github.com/georgique/world-geojson/archive/refs/heads/master.zip"
+
+# 📂 Output directories
+DATA_DIR = "geojson_data"
+OUTPUT_FILE = "wereld.geojson"
+
+# 🔹 Correcte ISO 3166-codes voor speciale regio's en overzeese gebieden
+ISO_OVERRIDES = {
+    # 🇬🇧 Britse gebieden
+    "Anguilla": ("AI", "AIA"),
+    "Bermuda": ("BM", "BMU"),
+    "British Indian Ocean Territory": ("IO", "IOT"),
+    "British Virgin Islands": ("VG", "VGB"),
+    "Cayman Islands": ("KY", "CYM"),
+    "Falkland Islands": ("FK", "FLK"),
+    "Gibraltar": ("GI", "GIB"),
+    "Montserrat": ("MS", "MSR"),
+    "Pitcairn": ("PN", "PCN"),
+    "Saint Helena": ("SH", "SHN"),
+    "South Georgia and the South Sandwich Islands": ("GS", "SGS"),
+    "Turks and Caicos Islands": ("TC", "TCA"),
+
+    # 🇺🇸 Amerikaanse gebieden
+    "American Samoa": ("AS", "ASM"),
+    "Guam": ("GU", "GUM"),
+    "Northern Mariana Islands": ("MP", "MNP"),
+    "Puerto Rico": ("PR", "PRI"),
+    "United States Minor Outlying Islands": ("UM", "UMI"),
+    "United States Virgin Islands": ("VI", "VIR"),
+
+    # 🇳🇱 Nederlandse gebieden
+    "Aruba": ("AW", "ABW"),
+    "Curacao": ("CW", "CUW"),
+    "Sint Maarten": ("SX", "SXM"),
+    "Bonaire": ("BQ-BO", "BES"),
+    "Saba": ("BQ-SA", "BES"),
+    "Sint Eustatius": ("BQ-SE", "BES"),
+
+    # 🇫🇷 Franse gebieden
+    "French Guiana": ("GF", "GUF"),
+    "French Polynesia": ("PF", "PYF"),
+    "French Southern Territories": ("TF", "ATF"),
+    "Guadeloupe": ("GP", "GLP"),
+    "Martinique": ("MQ", "MTQ"),
+    "Mayotte": ("YT", "MYT"),
+    "New Caledonia": ("NC", "NCL"),
+    "Réunion": ("RE", "REU"),
+    "Saint Barthelemy": ("BL", "BLM"),
+    "Saint Martin": ("MF", "MAF"),
+    "Saint Pierre and Miquelon": ("PM", "SPM"),
+    "Wallis and Futuna": ("WF", "WLF"),
+
+    # 🇳🇴 Noorse gebieden
+    "Jan Mayen": ("SJ", "SJM"),
+    "Svalbard": ("SJ", "SJM"),
+
+    # 🇨🇳 Chinese gebieden
+    "Hong Kong": ("HK", "HKG"),
+    "Macau": ("MO", "MAC"),
+    "Taiwan": ("TW", "TWN"),
+
+    #Azerbaijan 
+    "Nakhchivan": "NX"
+}
+
+def download_and_extract_geojson():
+    """ Download en extraheer de wereld-GeoJSON-bestanden als ze nog niet bestaan. """
+    if not os.path.exists(DATA_DIR):
+        os.makedirs(DATA_DIR)
+
+    zip_path = os.path.join(DATA_DIR, "world-geojson.zip")
+    
+    if not os.path.exists(zip_path):
+        print("🌍 Downloaden van wereld-GeoJSON bestanden...")
+
+        # Download het ZIP-bestand
+        response = requests.get(REPO_URL, stream=True)
+        with open(zip_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        print("✅ Download voltooid. Uitpakken...")
+
+    # **Zoek of de map al is uitgepakt**
+    extracted = False
+    for folder in os.listdir(DATA_DIR):
+        if folder.startswith("world-geojson"):
+            extracted = True
+            break
+
+    if not extracted:
+        # Uitpakken
+        with ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall(DATA_DIR)
+        print("✅ Uitgepakt. Gegevens klaar voor verwerking.")
+
+def format_country_name(name):
+    """ Formatteer land- en gebiedsnamen correct: USA = hoofdletters, andere landen elk woord met hoofdletter. """
+    if name.upper() == "USA":
+        return "USA"
+    return " ".join(word.capitalize() for word in name.split("_"))  # Zorgt voor juiste hoofdletters
+
+def find_geojson_folders():
+    """ Zoek naar de correcte `countries/` en `areas/` mappen. """
+    for root, dirs, files in os.walk(DATA_DIR):
+        if "countries" in dirs and "areas" in dirs:
+            return os.path.join(root, "countries"), os.path.join(root, "areas")
+    
+    return None, None
+
+def merge_geojson_files():
+    """ Combineer alle individuele land-GeoJSON bestanden in één bestand. """
+    countries_folder, areas_folder = find_geojson_folders()
+
+    if not countries_folder or not os.path.exists(countries_folder):
+        print(f"❌ Fout: Map met landen-geojson-bestanden niet gevonden in {DATA_DIR}.")
+        return
+
+    all_features = []
+
+    # 📂 Verwerk de landen in de map "countries"
+    for filename in os.listdir(countries_folder):
+        if filename.endswith(".json"):
+            country_name = format_country_name(filename.replace(".json", ""))  # Correcte naam
+            file_path = os.path.join(countries_folder, filename)
+
+            with open(file_path, "r", encoding="utf-8") as f:
+                country_data = json.load(f)
+            
+            if "features" in country_data:
+                for feature in country_data["features"]:
+                    feature["properties"]["name"] = country_name  # Voeg juiste naam toe
+                all_features.extend(country_data["features"])
+            else:
+                print(f"⚠️ Geen features gevonden in {filename}, bestand wordt overgeslagen.")
+
+    # 📂 Verwerk de overzeese gebieden in "areas"
+    if areas_folder and os.path.exists(areas_folder):
+        for country_folder in os.listdir(areas_folder):
+            country_path = os.path.join(areas_folder, country_folder)
+            if os.path.isdir(country_path):
+                mainland_found = False  # Controleer of het 'mainland' al is toegewezen
+
+                for area_filename in os.listdir(country_path):
+                    if area_filename.endswith(".json"):
+                        area_name = format_country_name(area_filename.replace(".json", ""))
+                        country_name = format_country_name(country_folder)
+
+                        # Check of dit het 'mainland' is
+                        if "mainland" in area_filename.lower():
+                            full_name = f"{country_name} Mainland"  # Gebruik '[Land] Mainland'
+                            mainland_found = True
+                        else:
+                            full_name = area_name  # Alleen de gebiedsnaam, geen landnaam toevoegen
+
+                        file_path = os.path.join(country_path, area_filename)
+                        
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            area_data = json.load(f)
+                        
+                        if "features" in area_data:
+                            for feature in area_data["features"]:
+                                feature["properties"]["name"] = full_name  # Voeg correcte naam toe
+                            all_features.extend(area_data["features"])
+                        else:
+                            print(f"⚠️ Geen features gevonden in {area_filename}, bestand wordt overgeslagen.")
+
+                # Als er geen aparte "mainland" is gevonden, skip deze
+                if not mainland_found:
+                    print(f"⚠️ Geen 'mainland' gevonden voor {country_name}. Skipping.")
+
+    # 📌 Maak een samengevoegd GeoJSON-bestand
+    merged_geojson = {
+        "type": "FeatureCollection",
+        "features": all_features
+    }
+
+    # 💾 Opslaan als wereld.geojson
+    output_path = os.path.join(DATA_DIR, OUTPUT_FILE)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(merged_geojson, f, ensure_ascii=False, indent=2)
+
+    print(f"✅ Gecombineerd GeoJSON-bestand opgeslagen als: {output_path}")
+
+    # **📌 Stap 2: Corrigeer ISO-codes na het opslaan**
+    correct_iso_codes(output_path)
+
+def correct_iso_codes(filepath):
+    """ Laad het GeoJSON-bestand opnieuw en corrigeer de ISO 3166-codes. """
+    with open(filepath, "r", encoding="utf-8") as f:
+        geojson_data = json.load(f)
+
+    for feature in geojson_data["features"]:
+        country_name = feature["properties"]["name"]
+
+        # Haal de correcte codes op
+        iso_alpha2, iso_alpha3 = ISO_OVERRIDES.get(country_name, ("XX", "XXX"))
+        
+        # Indien niet in overrides, probeer pycountry
+        if iso_alpha2 == "XX":
+            country = pycountry.countries.get(name=country_name)
+            if country:
+                iso_alpha2, iso_alpha3 = country.alpha_2, country.alpha_3
+        
+        feature["properties"]["ADM0_A2"] = iso_alpha2
+        feature["properties"]["ADM0_A3"] = iso_alpha3
+
+    # 💾 Opslaan met correcte codes
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(geojson_data, f, ensure_ascii=False, indent=2)
+
+    print("✅ ISO-codes gecorrigeerd en bestand bijgewerkt.")
+
+if __name__ == "__main__":
+    download_and_extract_geojson()
+    merge_geojson_files()
+    print("🎉 Het samengevoegde wereld-GeoJSON-bestand is klaar voor gebruik!")
