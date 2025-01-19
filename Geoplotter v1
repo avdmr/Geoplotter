@@ -1,0 +1,379 @@
+import plotly.express as px
+import pandas as pd
+import pycountry
+import json
+import os
+from datetime import datetime
+import plotly.io as pio
+import plotly.graph_objects as go
+
+def kleur_landen_plotly(
+    output_folder="output",
+    source_folder="source",
+    world_geojson_path="source/geojson/world_10m.geojson",
+    overseas_geojson_path="source/geojson/overseas_areas.geojson"  # Pad naar het extra GeoJSON-bestand
+):
+    # 1) GeoJSON inlezen (basiswereldkaart)
+    with open(world_geojson_path, "r", encoding="utf-8") as f:
+        world_geojson = json.load(f)
+
+    # 2) GeoJSON inlezen voor overzeese gebieden
+    if overseas_geojson_path and os.path.exists(overseas_geojson_path):
+        with open(overseas_geojson_path, "r", encoding="utf-8") as f:
+            overseas_geojson = json.load(f)
+    else:
+        print(f"⚠️ Overzeese GeoJSON-bestand niet gevonden: {overseas_geojson_path}")
+        overseas_geojson = None
+
+    # Dit moet overeenkomen met jouw GeoJSON-property waar de landcode in staat
+    feature_key_world = "properties.ADM0_A3"
+    feature_key_overseas = "properties.ADM0_A3"  # Pas dit aan indien nodig
+
+    # 3) Verwerk de txt-bestanden en maak een DataFrame (df_colored) van ingekleurde landen
+    df_list = []
+    color_map = {}
+    label_map = {}
+
+    for file_name in os.listdir(source_folder):
+        if file_name.endswith(".txt") and file_name != "ignore.txt":
+            file_path = os.path.join(source_folder, file_name)
+            with open(file_path, "r", encoding="utf-8") as file:
+                lines = [line.strip() for line in file if line.strip()]
+                if not lines or not lines[0].lower().startswith("label:"):
+                    print(f"⚠️ Bestand '{file_name}' mist een label op de eerste regel en wordt overgeslagen.")
+                    continue
+
+                color_key = file_name.replace(".txt", "").lower()  # Gebruik een consistente naam
+                label = lines[0].replace("label:", "").strip().replace('"', '')
+                label_map[color_key] = label
+                color_map[color_key] = []
+
+                for line in lines[1:]:
+                    alpha_code = line.upper()
+
+                    # Ondersteuning voor ISO2/ISO3
+                    if len(alpha_code) == 2:
+                        country = pycountry.countries.get(alpha_2=alpha_code)
+                        iso_alpha3 = country.alpha_3 if country else None
+                    elif len(alpha_code) == 3:
+                        country = pycountry.countries.get(alpha_3=alpha_code)
+                        iso_alpha3 = alpha_code if country else None
+                    else:
+                        iso_alpha3 = None
+
+                    if iso_alpha3:
+                        landnaam = country.name if country else iso_alpha3
+                        df_list.append({
+                            "iso_alpha": iso_alpha3,
+                            "color_key": color_key,  # Toevoegen van color_key voor kleurmapping
+                            "label": label,
+                            "hover_text": landnaam
+                        })
+                        color_map[color_key].append(landnaam)
+                    else:
+                        print(f"⚠️ Landcode niet herkend: {alpha_code}")
+
+    # 4) Verwerk ignore.txt als het aanwezig is
+    ignore_file = os.path.join(source_folder, "ignore.txt")
+    if os.path.exists(ignore_file):
+        with open(ignore_file, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+            if not lines:
+                print(f"⚠️ 'ignore.txt' is leeg.")
+            else:
+                # Controleer of de eerste regel een label bevat
+                if lines[0].lower().startswith("label:"):
+                    # Hoewel er een label is, willen we deze landen toch 'No hit' kleuren
+                    # Dus we negeren het label en gebruiken 'No hit'
+                    country_lines = lines[1:]
+                else:
+                    # Geen label, gebruik alle lijnen als landcodes
+                    country_lines = lines
+
+                for line in country_lines:
+                    alpha_code = line.upper()
+                    if len(alpha_code) == 2:
+                        country = pycountry.countries.get(alpha_2=alpha_code)
+                        iso_alpha3 = country.alpha_3 if country else None
+                    elif len(alpha_code) == 3:
+                        country = pycountry.countries.get(alpha_3=alpha_code)
+                        iso_alpha3 = alpha_code if country else None
+                    else:
+                        iso_alpha3 = None
+
+                    if iso_alpha3:
+                        landnaam = country.name if country else iso_alpha3
+                        df_list.append({
+                            "iso_alpha": iso_alpha3,
+                            "color_key": "no_color",  # Assign 'No hit' kleur
+                            "label": "No hit",        # Assign 'No hit' label
+                            "hover_text": landnaam
+                        })
+                        if "no_color" not in color_map:
+                            color_map["no_color"] = []
+                        color_map["no_color"].append(landnaam)
+                    else:
+                        print(f"⚠️ Landcode niet herkend in ignore.txt: {alpha_code}")
+
+    # 5) Als er geen geldige landen zijn, stoppen we
+    if not df_list:
+        print("❌ Geen geldige landcodes gevonden. Zorg voor correcte txt-bestanden.")
+        return
+
+    df_colored = pd.DataFrame(df_list)
+
+    # 6) Maak DataFrame met *alle* landen uit je geojson (basiskaart)
+    #    Zo zorgen we dat elk land sowieso getekend wordt.
+    all_iso_codes_world = []
+    for feature in world_geojson["features"]:
+        # Vooropgesteld dat er een property 'ADM0_A3' is
+        iso_code = feature["properties"].get("ADM0_A3")
+        if iso_code:
+            all_iso_codes_world.append(iso_code)
+    all_iso_codes_world = sorted(set(all_iso_codes_world))
+
+    df_all_world = pd.DataFrame({"iso_alpha": all_iso_codes_world})
+
+    # 7) Merge df_all_world (alle landen) met df_colored (ingekleurde subset)
+    df_merged_world = pd.merge(df_all_world, df_colored, on="iso_alpha", how="left")
+
+    # df_merged_world heeft nu kolommen: iso_alpha, color_key, label, hover_text
+    # Voor landen die niet in df_colored zaten, staan hier NaN.
+    # Vul deze met een default label en hover_text:
+    default_label = "No hit"
+    df_merged_world["label"] = df_merged_world["label"].fillna(default_label)
+    df_merged_world["hover_text"] = df_merged_world["hover_text"].fillna(df_merged_world["iso_alpha"])
+    df_merged_world["color_key"] = df_merged_world["color_key"].fillna("no_color")
+
+    # 8) Maak een color_discrete_map voor de labels
+    #    - Voor alle user-labels
+    color_discrete_map = {label: clr for (clr, label) in label_map.items()}
+    #    - Voeg een kleur toe voor het default label
+    color_discrete_map[default_label] = "lightgray"
+
+    # 9) Maak de choropleth met *de volledige df_merged_world*
+    fig = px.choropleth(
+        df_merged_world,
+        geojson=world_geojson,
+        locations="iso_alpha",
+        featureidkey=feature_key_world,
+        color="label",
+        hover_name="hover_text",
+        color_discrete_map=color_discrete_map,
+        projection="equirectangular",
+        category_orders={"label": list(label_map.values())}  # Zorg dat de legenda de juiste volgorde heeft
+    )
+
+    # 10) Verwijder "No hit" uit de Plotly legenda
+    for trace in fig.data:
+        if trace.name == default_label:
+            trace.showlegend = False
+
+    # 11) Zorg dat Plotly niet alsnog eigen coastlines/ocean tekent
+    #    want dat kan (afhankelijk van de Plotly-versie) resulteren
+    #    in een online fetch. We willen 100% offline.
+    fig.update_geos(
+        showcoastlines=False,
+        showland=False,
+        showocean=False,
+        showcountries=False,
+    )
+
+    # Eventueel kun je de bounding box van de hele GeoJSON tonen:
+    fig.update_geos(fitbounds="locations")
+
+    # 12) Pas de layout aan, bijvoorbeeld legend-titel
+    fig.update_layout(
+        legend_title=dict(text="<b>Category</b>")
+    )
+
+    # 13) Voeg Overzeese Gebieden Toe als Scattergeo Traces
+    #    Deze zullen bovenop de choropleth komen
+    if overseas_geojson:
+        for feature in overseas_geojson["features"]:
+            iso_code = feature["properties"].get("ADM0_A3")
+            if not iso_code:
+                print(f"⚠️ Geen ISO-code gevonden voor feature: {feature}")
+                continue
+
+            # Controleer of deze ISO-code in de ingekleurde DataFrame zit
+            if iso_code in df_colored["iso_alpha"].values:
+                # Haal de bijbehorende rij op
+                row = df_colored[df_colored["iso_alpha"] == iso_code].iloc[0]
+                label = row["label"]
+                hover_text = row["hover_text"]
+                color_key = row["color_key"]
+
+                # Haal de kleur op uit color_discrete_map
+                fill_color = color_discrete_map.get(label, "gray")
+
+                geometry = feature.get("geometry", {})
+                geom_type = geometry.get("type", "")
+                coordinates = geometry.get("coordinates", [])
+
+                # Functie om polygonen te tekenen
+                def add_polygon_traces(geom_type, coordinates, fill_color, hover_text, island_file):
+                    if geom_type == 'Polygon':
+                        polygons = [coordinates]
+                    elif geom_type == 'MultiPolygon':
+                        polygons = coordinates
+                    else:
+                        print(f"Onbekend geometry type: {geom_type} in {island_file}")
+                        return
+
+                    for polygon in polygons:
+                        for ring in polygon:
+                            if not isinstance(ring, list) or not all(isinstance(coord, list) and len(coord) == 2 for coord in ring):
+                                print(f"Onjuiste coördinatenstructuur in {island_file}: {ring}")
+                                continue  # Overslaan als de ring niet correct is
+
+                            # Sluiten van de ring door de eerste coördinaat toe te voegen aan het einde
+                            if ring[0] != ring[-1]:
+                                print(f"Ring is niet gesloten in {island_file}. Sluiten van de ring.")
+                                closed_ring = ring + [ring[0]]
+                            else:
+                                closed_ring = ring
+
+                            try:
+                                lons, lats = zip(*closed_ring)
+                            except TypeError as e:
+                                print(f"TypeError bij het unzippen van ring in {island_file}: {e}")
+                                continue
+
+                            fig.add_trace(
+                                go.Scattergeo(
+                                    lon=lons,
+                                    lat=lats,
+                                    fill='toself',
+                                    fillcolor=fill_color,
+                                    line=dict(color='black', width=1),
+                                    hoverinfo='text',
+                                    text=hover_text,
+                                    showlegend=False,
+                                    mode='lines'  # Alleen lijnen, geen markers
+                                )
+                            )
+
+                # Voeg de polygonen toe
+                add_polygon_traces(geom_type, coordinates, fill_color, hover_text, "overseas_area")
+
+    # 14) Maak de HTML Legenda
+    #    Alleen de ingekleurde landen worden weergegeven, niet de "No hit" landen
+    #    We groeperen de landen per label en tonen meerdere landen per rij binnen elke cluster
+    legend_html = """
+    <style>
+        .legend-container {
+            font-family: Arial, sans-serif;
+            padding: 10px;
+            text-align: center;
+            margin-top: 10px;  /* Verklein de marge om dichter bij de kaart te komen */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .legend-cluster {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .legend-category {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        .legend-items {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 2px 10px;
+        }
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            display: inline-block;
+            margin-right: 8px;
+            border: 1px solid black;
+        }
+        .legend-country {
+            font-size: 14px;
+        }
+    </style>
+    <div class="legend-container">
+    """
+
+    # Groepeer de landen per label
+    grouped = df_colored.groupby('label')['hover_text'].apply(list).reset_index()
+
+    for _, row in grouped.iterrows():
+        label = row['label']
+        countries = row['hover_text']
+        color = color_discrete_map.get(label, "gray")
+        if label != default_label:  # Exclude "No hit" label from the legend
+            # Begin een nieuwe cluster rij met categorie naam
+            legend_html += f"""
+            <div class="legend-cluster">
+                <div class="legend-category">{label}</div>
+                <div class="legend-items">
+            """
+            # Voeg voor elk land een legenda-item toe binnen de cluster
+            for country in countries:
+                legend_html += f"""
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: {color};"></div>
+                        <div class="legend-country">{country}</div>
+                    </div>
+                """
+            # Sluit de cluster rij
+            legend_html += f"""
+                </div>
+            </div>
+            """
+
+    legend_html += "</div>"
+
+    # 15) Exporteer HTML (inclusief plotly.js) zodat er *geen* CDN nodig is
+    timestamp = datetime.now().strftime("%d-%m-%Y_%H-%M-%S")
+    html_filename = f"wereldkaart_{timestamp}.html"
+    html_path = os.path.join(output_folder, html_filename)
+
+    # Maak een volledige HTML-pagina met één enkele kaart en de legenda
+    # Gebruik fig.to_html met full_html=False en include_plotlyjs='inline' om Plotly JS in de plot div te plaatsen
+    plot_html = fig.to_html(full_html=False, include_plotlyjs='inline')
+
+    # Combineer de plot en de legenda in één HTML-bestand
+    full_html = f"""
+    <html>
+    <head>
+        <meta charset="utf-8" />
+        <title>Gekleurde Wereldkaart</title>
+    </head>
+    <body>
+        {plot_html}
+        {legend_html}  <!-- Voeg de aangepaste legenda toe -->
+    </body>
+    </html>
+    """
+
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(full_html)
+    print(f"✅ Kaart opgeslagen als: {html_path}")
+
+    # 16) Exporteer PNG (gebeurt ook volledig offline via kaleido)
+    png_filename = f"wereldkaart_{timestamp}.png"
+    png_path = os.path.join(output_folder, png_filename)
+    pio.write_image(fig, png_path, scale=3, width=3840, height=2160)
+    print(f"✅ PNG opgeslagen als: {png_path}")
+
+# ---- DEMO AANROEP ----
+if __name__ == "__main__":
+    kleur_landen_plotly(
+        output_folder="output",
+        source_folder="source",
+        world_geojson_path="source/geojson/world_10m.geojson",
+        overseas_geojson_path="source/geojson/overseas_areas.geojson"  # Geef het pad naar het extra GeoJSON-bestand
+    )
