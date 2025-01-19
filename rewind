@@ -1,0 +1,15 @@
+from geojson_rewind import rewind
+import json
+
+# Laad het GeoJSON-bestand
+with open("world_areas.geojson", "r", encoding="utf-8") as f:
+    geojson_data = json.load(f)
+
+# Pas de correcte winding order toe
+geojson_corrected = rewind(geojson_data, rfc7946=False)
+
+# Opslaan als nieuw bestand
+with open("world_areas_rewinded.geojson", "w", encoding="utf-8") as f:
+    json.dump(geojson_corrected, f, indent=4)
+
+print("✅ Rewind toegepast. Gebruik het bestand 'world_areas.geojson'")
